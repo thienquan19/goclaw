@@ -32,15 +32,18 @@ func (c *Channel) checkDMPolicy(ctx context.Context, senderID, chatID string) bo
 
 // checkGroupPolicy enforces group access policy (allowlist/pairing).
 // Returns false if the group is blocked by policy; does NOT check @mention gating.
-func (c *Channel) checkGroupPolicy(ctx context.Context, senderID, groupID string) bool {
+func (c *Channel) checkGroupPolicy(ctx context.Context, senderID, groupID string, isMentioned bool) bool {
 	result := c.CheckGroupPolicy(ctx, senderID, groupID, c.config.GroupPolicy)
 	switch result {
 	case channels.PolicyAllow:
 		return true
 	case channels.PolicyNeedsPairing:
-		// Send pairing notification as DM to the individual sender,
-		// NOT into the group chat (avoids spamming the group).
-		c.sendGroupPairingDM(ctx, senderID, groupID)
+		// Only register pairing request if the bot was explicitly mentioned.
+		// We do NOT send any messages to the group or DM, we just silently
+		// register it so the admin can approve via Web Dashboard.
+		if isMentioned {
+			c.requestGroupPairing(ctx, groupID)
+		}
 		return false
 	default:
 		slog.Debug("zalo_personal group message rejected by policy", "group_id", groupID, "policy", c.config.GroupPolicy)
@@ -48,53 +51,30 @@ func (c *Channel) checkGroupPolicy(ctx context.Context, senderID, groupID string
 	}
 }
 
-// sendGroupPairingDM sends a pairing notification as a DM to the individual
-// sender instead of posting into the group chat. The pairing request is still
-// registered so the admin can approve it via Web Dashboard or CLI.
-func (c *Channel) sendGroupPairingDM(ctx context.Context, senderID, groupID string) {
+// requestGroupPairing registers a pairing request for a group silently.
+// It does NOT send any notification messages to the chat to avoid spam.
+// The admin can view and approve the request via Web Dashboard.
+func (c *Channel) requestGroupPairing(ctx context.Context, groupID string) {
 	ps := c.PairingService()
-	sess := c.session()
-	if ps == nil || sess == nil {
+	if ps == nil {
 		return
 	}
 
 	groupSenderID := fmt.Sprintf("group:%s", groupID)
 
-	// Use longer debounce for groups (24h) to avoid repeatedly notifying
-	// about the same unapproved group.
+	// Use longer debounce for groups (24h) to avoid spamming the pairing database.
 	if !c.CanSendPairingNotif(groupSenderID, groupPairingDebounce) {
 		return
 	}
 
-	code, err := ps.RequestPairing(ctx, groupSenderID, c.Name(), groupID, "default", nil)
+	_, err := ps.RequestPairing(ctx, groupSenderID, c.Name(), groupID, "default", nil)
 	if err != nil {
 		slog.Debug("zalo_personal group pairing request failed", "group_id", groupID, "error", err)
 		return
 	}
 
-	replyText := fmt.Sprintf(
-		"🔐 Nhóm Zalo (ID: %s) chưa được cấp quyền truy cập.\n\n"+
-			"🔑 Mã ghép nối: %s\n\n"+
-			"✅ Chủ bot có thể phê duyệt:\n"+
-			"  • Web Dashboard → Nodes → Approve\n"+
-			"  • CLI: goclaw pairing approve %s",
-		groupID, code, code,
-	)
-
-	// Send as DM to the individual sender, NOT into the group.
-	sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := protocol.SendMessage(sendCtx, sess, senderID, protocol.ThreadTypeUser, replyText); err != nil {
-		// DM delivery may fail (e.g. user hasn't DM'd the bot before).
-		// Still mark as sent to avoid retry spam; the pairing request is
-		// already visible in Web Dashboard.
-		slog.Warn("zalo_personal: failed to send group pairing DM, pairing request still registered in dashboard",
-			"sender_id", senderID, "group_id", groupID, "error", err)
-		c.MarkPairingNotifSent(groupSenderID)
-	} else {
-		c.MarkPairingNotifSent(groupSenderID)
-		slog.Info("zalo_personal group pairing DM sent", "sender_id", senderID, "group_id", groupID, "code", code)
-	}
+	c.MarkPairingNotifSent(groupSenderID)
+	slog.Info("zalo_personal group pairing requested silently", "group_id", groupID)
 }
 
 func (c *Channel) sendPairingReply(ctx context.Context, senderID, chatID string) {

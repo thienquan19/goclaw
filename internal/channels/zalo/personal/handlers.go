@@ -86,8 +86,11 @@ func (c *Channel) handleGroupMessage(msg protocol.GroupMessage) {
 		return
 	}
 
+	wasMentioned := c.checkBotMentioned(msg.Data.Mentions)
+
 	// Step 1: enforce access policy (allowlist/pairing). Hard reject — don't record history.
-	if !c.checkGroupPolicy(ctx, senderID, threadID) {
+	// We pass wasMentioned so the policy can decide whether to silently request pairing.
+	if !c.checkGroupPolicy(ctx, senderID, threadID, wasMentioned) {
 		return
 	}
 
@@ -98,7 +101,6 @@ func (c *Channel) handleGroupMessage(msg protocol.GroupMessage) {
 
 	// Step 2: @mention gating — record non-mentioned messages in history and return.
 	if c.RequireMention() {
-		wasMentioned := c.checkBotMentioned(msg.Data.Mentions)
 		if !wasMentioned {
 			c.GroupHistory().Record(threadID, channels.HistoryEntry{
 				Sender:    senderName,
