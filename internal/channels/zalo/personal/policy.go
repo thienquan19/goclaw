@@ -10,10 +10,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/channels/zalo/personal/protocol"
 )
 
-const (
-	pairingDebounce      = 60 * time.Second
-	groupPairingDebounce = 24 * time.Hour // Groups: debounce 24h to avoid spamming
-)
+const pairingDebounce = 60 * time.Second
 
 // checkDMPolicy enforces DM policy for incoming messages.
 func (c *Channel) checkDMPolicy(ctx context.Context, senderID, chatID string) bool {
@@ -61,11 +58,6 @@ func (c *Channel) requestGroupPairing(ctx context.Context, groupID string) {
 	}
 
 	groupSenderID := fmt.Sprintf("group:%s", groupID)
-
-	// Use longer debounce for groups (24h) to avoid spamming the pairing database.
-	if !c.CanSendPairingNotif(groupSenderID, groupPairingDebounce) {
-		return
-	}
 
 	_, err := ps.RequestPairing(ctx, groupSenderID, c.Name(), groupID, "default", nil)
 	if err != nil {
