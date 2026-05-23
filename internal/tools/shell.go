@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -59,9 +61,7 @@ func (t *ExecTool) SetGlobalShellDenyGroups(groups map[string]bool) {
 		return
 	}
 	cp := make(map[string]bool, len(groups))
-	for k, v := range groups {
-		cp[k] = v
-	}
+	maps.Copy(cp, groups)
 	t.globalDenyGroups = cp
 }
 
@@ -77,12 +77,9 @@ func (t *ExecTool) effectiveDenyGroups(ctx context.Context) map[string]bool {
 		return t.globalDenyGroups
 	}
 	merged := make(map[string]bool, len(t.globalDenyGroups)+len(agent))
-	for k, v := range t.globalDenyGroups {
-		merged[k] = v
-	}
-	for k, v := range agent {
-		merged[k] = v // agent wins per-key
-	}
+	maps.Copy(merged, t.globalDenyGroups)
+	// agent wins per-key
+	maps.Copy(merged, agent)
 	return merged
 }
 
@@ -118,8 +115,18 @@ func (t *ExecTool) SetSandboxKey(key string) {}
 // These are NOT configurable via deny groups — they always apply regardless of group config.
 func (t *ExecTool) DenyPaths(paths ...string) {
 	for _, p := range paths {
-		escaped := regexp.QuoteMeta(p)
-		t.pathDenyPatterns = append(t.pathDenyPatterns, regexp.MustCompile(escaped))
+		seen := make(map[string]struct{}, 3)
+		for _, variant := range []string{p, filepath.ToSlash(p), filepath.FromSlash(p)} {
+			if variant == "" {
+				continue
+			}
+			if _, ok := seen[variant]; ok {
+				continue
+			}
+			seen[variant] = struct{}{}
+			escaped := regexp.QuoteMeta(variant)
+			t.pathDenyPatterns = append(t.pathDenyPatterns, regexp.MustCompile(escaped))
+		}
 		t.pathDenyRoots = append(t.pathDenyRoots, p)
 	}
 }
